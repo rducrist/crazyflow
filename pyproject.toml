@@ -112,8 +112,6 @@ skip-magic-trailing-comma = true
 line-ending = "auto"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
-
-[tool.pixi]
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64", "osx-arm64"]
@@ -121,6 +119,7 @@ platforms = ["linux-64", "osx-arm64"]
 [tool.pixi.dependencies]
 pip = "*"
 ruff = "*"
+ipython = ">=9.13.0,<10"
 
 [tool.pixi.pypi-dependencies]
 crazyflow = { path = "./", editable = true }

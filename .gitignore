@@ -20,6 +20,7 @@ benchmark/data
 # pixi environments
 .pixi
 *.egg-info
+.codex
 
 # MkDocs build output
 site/
