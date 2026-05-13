@@ -55,6 +55,8 @@ class FirstPrinciplesData:
     """Drag matrix of the drone."""
     rotor_dyn_coef: Array  # (N, M, 4)
     """Rotor speed dynamics time constant of the drone."""
+    prop_radius: Array # (N, M, 1)
+    """Propeller radius of the drone."""
 
     @staticmethod
     def create(
@@ -75,6 +77,7 @@ class FirstPrinciplesData:
             mixing_matrix=jnp.asarray(p["mixing_matrix"], device=device),
             drag_matrix=jnp.asarray(p["drag_matrix"], device=device),
             rotor_dyn_coef=jnp.asarray(p["rotor_dyn_coef"], device=device),
+            prop_radius=jnp.asarray(p["prop_radius"], device=device),
         )
 
 
