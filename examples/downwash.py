@@ -37,6 +37,22 @@ def downwash_fn(data: SimData) -> SimData:
     arm_length = data.params.L
     prop_radius = data.params.prop_radius
     gravity_vec = data.params.gravity_vec
+    mixing_matrix = data.params.mixing_matrix
+
+    # mixing_matrix = [
+    # [-1.0, -1.0,  1.0,  1.0],
+    # [-1.0,  1.0,  1.0, -1.0],
+    # [-1.0,  1.0, -1.0,  1.0]]
+    
+    # We can infer the positions of the rotors from the mixing matrix
+    rotor_offsets_body = (arm_length / jnp.sqrt(2)) * jnp.stack(
+        (
+            -mixing_matrix[..., 1, :],
+            mixing_matrix[..., 0, :],
+            jnp.zeros_like(mixing_matrix[..., 0, :]),
+        ),
+        axis=-1,
+    )
 
     # Compute the positional differences as a matrix
     pos_differences = pos[:, :, None, :] - pos[:, None, :, :]  # (n_worlds, n_drones, n_drones, 3)
@@ -58,6 +74,7 @@ def downwash_fn(data: SimData) -> SimData:
 
     in_far_field = (s > 0.0) & (r < cone_border) & not_self
 
+    # Still stand air velocity for every drone
     v_hover = hover_induced_velocity(
         mass=mass,
         gravitational_acceleration=jnp.linalg.norm(gravity_vec),
@@ -71,16 +88,27 @@ def downwash_fn(data: SimData) -> SimData:
         hover_induced_velocity=v_hover_source, s=s, motor_distance=arm_length_source
     )
 
-    v_down = jet_radial_profile(
-        jet_centerline_velocity=v_center, r=r, jet_half_width=cone_border
-    )
+    v_down = jet_radial_profile(jet_centerline_velocity=v_center, r=r, jet_half_width=cone_border)
 
     # Mask invalid pairs
     v_down = jnp.where(in_far_field, v_down, 0.0)
 
-
     # Add up contributions from all drones
     total_v_down = jnp.sum(v_down, axis=2)  # (n_worlds, n_drones)
+
+    # Adjust for air above propeller moving at wind speed created by downwash
+    v_hover_adjusted = total_v_down / 2 + jnp.sqrt((total_v_down / 2) ** 2 + v_hover**2)
+
+    v_hover_source = v_hover_adjusted[:, None, :, 0]
+
+    v_center = jet_centerline_velocity(
+        hover_induced_velocity=v_hover_source, s=s, motor_distance=arm_length_source
+    )
+
+    v_down = jet_radial_profile(jet_centerline_velocity=v_center, r=r, jet_half_width=cone_border)
+
+    v_down = jnp.where(in_far_field, v_down, 0.0)
+    total_v_down = jnp.sum(v_down, axis=2)
 
     # Create wind vector
     wind_world = jnp.zeros_like(pos)
@@ -99,19 +127,26 @@ def downwash_fn(data: SimData) -> SimData:
 
     # Rotor drag term
     K_diag = jnp.array([-2.1991768793537817e-07, -2.1991768793537817e-07, -1.7024656365051572e-07])
-    sum_eta = jnp.sum(states.rotor_vel, axis=-1, keepdims=True)
-    rotor_drag = sum_eta * K_diag * v_a_body
+    rotor_vels_body = v_a_body[..., None, :] + jnp.cross(
+        states.ang_vel[..., None, :], rotor_offsets_body
+    )
 
-    force_body = parasitic_drag + rotor_drag
+    rotor_drag = K_diag * states.rotor_vel[..., None] * rotor_vels_body
+    rotor_drag_summed = jnp.sum(rotor_drag, axis=-2)
+
+    torque_body = jnp.sum(jnp.cross(rotor_offsets_body, rotor_drag), axis=-2)
+    torque_world = (rot @ torque_body[..., None])[..., 0]
+
+    force_body = parasitic_drag + rotor_drag_summed
     force_world = (rot @ force_body[..., None])[..., 0]
 
     jdbg.print("wind_world {x}", x=wind_world)
     jdbg.print("rel_air_world {x}", x=rel_air_world)
     jdbg.print("v_a_body {x}", x=v_a_body)
-    jdbg.print("force_body {x}", x=force_body)
-    jdbg.print("force_world {x}", x=force_world)
+    jdbg.print("force_body {f} torque_body {t}", f=force_body, t=torque_body)
+    jdbg.print("force_world {f} torque_world {t}", f=force_world, t=torque_world)
 
-    return data.replace(states=states.replace(force=force_world))
+    return data.replace(states=states.replace(force=force_world, torque=torque_world))
 
 
 def straight_line_control(sim: Sim, t: float) -> NDArray:
@@ -171,6 +206,7 @@ def main(plot: bool = False):
 
     pos = []
     force = []
+    torque = []
     sim.reset()
     sim.render()
     for i in range(int(SIM_DURATION * sim.control_freq)):
@@ -178,21 +214,24 @@ def main(plot: bool = False):
         sim.step(sim.freq // sim.control_freq)
         current_pos = np.array(sim.data.states.pos[0])
         current_force = np.array(sim.data.states.force[0])
+        current_torque = np.array(sim.data.states.torque[0])
         pos.append(current_pos)
         force.append(current_force)
+        torque.append(current_torque)
         draw_force_arrows(sim)
         sim.render()
 
     sim.close()
     if plot:
-        plot_results(pos, force)
+        plot_results(pos, force, torque)
 
 
-def plot_results(pos: list[NDArray], force: list[NDArray]):
+def plot_results(pos: list[NDArray], force: list[NDArray], torque: list[NDArray]):
     import matplotlib.pyplot as plt  # noqa: F401
 
     pos = np.array(pos)
     force = np.array(force)
+    torque = np.array(torque)
     t = np.linspace(0, SIM_DURATION, len(pos))
 
     fig, ax = plt.subplots(3, 1, sharex=True, figsize=(8, 6))
@@ -207,15 +246,21 @@ def plot_results(pos: list[NDArray], force: list[NDArray]):
     ax[-1].set_xlabel("Time (s)")
     plt.tight_layout()
 
-    fig_force, ax_force = plt.subplots(3, 1, sharex=True, figsize=(8, 6))
+    fig_force, ax_force = plt.subplots(3, 2, sharex=True, figsize=(11, 6))
     for i, label in enumerate(labels):
-        ax_force[i].plot(t, force[:, 0, i], label=f"drone 0 force {label}")
-        ax_force[i].plot(t, force[:, 1, i], label=f"drone 1 force {label}", linestyle="--")
-        ax_force[i].set_ylabel(f"F{label} [N]")
-        ax_force[i].legend()
+        ax_force[i, 0].plot(t, force[:, 0, i], label=f"drone 0 force {label}")
+        ax_force[i, 0].plot(t, force[:, 1, i], label=f"drone 1 force {label}", linestyle="--")
+        ax_force[i, 0].set_ylabel(f"F{label} [N]")
+        ax_force[i, 0].legend()
 
-    fig_force.suptitle("Downwash disturbance force")
-    ax_force[-1].set_xlabel("Time (s)")
+        ax_force[i, 1].plot(t, torque[:, 0, i], label=f"drone 0 torque {label}")
+        ax_force[i, 1].plot(t, torque[:, 1, i], label=f"drone 1 torque {label}", linestyle="--")
+        ax_force[i, 1].set_ylabel(f"T{label} [Nm]")
+        ax_force[i, 1].legend()
+
+    fig_force.suptitle("Downwash disturbance force and torque")
+    ax_force[-1, 0].set_xlabel("Time (s)")
+    ax_force[-1, 1].set_xlabel("Time (s)")
     plt.tight_layout()
     plt.show()
 

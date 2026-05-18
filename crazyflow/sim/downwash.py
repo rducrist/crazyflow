@@ -3,14 +3,12 @@
 import jax.numpy as jnp
 from jax import Array
 
-ScalarOrArray = float | Array
-
 
 def hover_induced_velocity(
-    mass: ScalarOrArray,
-    gravitational_acceleration: ScalarOrArray,
-    air_density: ScalarOrArray,
-    propeller_radius: ScalarOrArray,
+    mass: Array,
+    gravitational_acceleration: Array,
+    air_density: Array,
+    propeller_radius: Array,
     number_propellers: int,
 ) -> Array:
     """This function computes the induced velocity of a drone at hover."""
@@ -21,10 +19,11 @@ def hover_induced_velocity(
     )
 
 
+
 def jet_centerline_velocity(
-    hover_induced_velocity: ScalarOrArray,
-    s: ScalarOrArray,
-    motor_distance: ScalarOrArray,
+    hover_induced_velocity: Array,
+    s: Array,
+    motor_distance: Array,
     Bd: float = 10.11,
     s0: float = -5.817,
 ) -> Array:
@@ -33,8 +32,8 @@ def jet_centerline_velocity(
 
 
 def jet_half_width(
-    motor_distance: ScalarOrArray,
-    s: ScalarOrArray,
+    motor_distance: Array,
+    s: Array,
     spreading_rate: float = 0.07668,
     s0: float = -5.817,
 ) -> Array:
@@ -43,9 +42,9 @@ def jet_half_width(
 
 
 def jet_radial_profile(
-    jet_centerline_velocity: ScalarOrArray,
-    r: ScalarOrArray,
-    jet_half_width: ScalarOrArray,
+    jet_centerline_velocity: Array,
+    r: Array,
+    jet_half_width: Array,
 ) -> Array:
     """This function computes the downwash velocity field."""
     return jet_centerline_velocity / (
