@@ -18,8 +18,12 @@ from crazyflow.sim.downwash import (
     jet_half_width,
     jet_radial_profile,
 )
+from crazyflow.sim.visualize import draw_line
 
 SIM_DURATION = 4.0
+FORCE_ARROW_SCALE = 25.0
+FORCE_ARROW_HEAD_LENGTH = 0.08
+FORCE_ARROW_HEAD_ANGLE = np.deg2rad(25.0)
 SOURCE_POS = np.array([-0.5, -0.5, 1.0])
 TARGET_START = np.array([0.5, -0.5, 0.85])
 TARGET_END = np.array([-1.5, -0.5, 0.85])
@@ -90,13 +94,13 @@ def downwash_fn(data: SimData) -> SimData:
     speed = jnp.linalg.norm(v_a_body, axis=-1, keepdims=True)
 
     # Parasitic drag term
-    C_diag = jnp.array([1.4791264555654108e-05, 1.4791264555654108e-05, 5.333078409812428e-05])
-    parasitic_drag = -speed * C_diag * v_a_body
+    C_diag = jnp.array([-2.329916287671239e-05, -2.329916287671239e-05, -3.078507303977562e-05])
+    parasitic_drag = speed * C_diag * v_a_body
 
     # Rotor drag term
-    K_diag = jnp.array([-3.7892226480998745e-07, -3.7892226480998745e-07, 2.9916664066719794e-07])
+    K_diag = jnp.array([-2.1991768793537817e-07, -2.1991768793537817e-07, -1.7024656365051572e-07])
     sum_eta = jnp.sum(states.rotor_vel, axis=-1, keepdims=True)
-    rotor_drag = -sum_eta * K_diag * v_a_body
+    rotor_drag = sum_eta * K_diag * v_a_body
 
     force_body = parasitic_drag + rotor_drag
     force_world = (rot @ force_body[..., None])[..., 0]
@@ -118,6 +122,47 @@ def straight_line_control(sim: Sim, t: float) -> NDArray:
     cmd[:, 1, :3] = TARGET_START + phase * (TARGET_END - TARGET_START)
     return cmd
 
+
+def draw_force_arrows(sim: Sim, world: int = 0):
+    """Draw the disturbance force at each drone COM."""
+    pos = np.array(sim.data.states.pos[world])
+    force = np.array(sim.data.states.force[world])
+    rgba = np.array([1.0, 0.1, 0.0, 1.0])
+
+    for start, force_world in zip(pos, force):
+        arrow = FORCE_ARROW_SCALE * force_world
+        arrow_length = np.linalg.norm(arrow)
+        if arrow_length < 1e-6:
+            continue
+
+        direction = arrow / arrow_length
+        end = start + arrow
+        draw_line(sim, np.array([start, end]), rgba=rgba, start_size=4.0, end_size=4.0)
+
+        head_length = min(FORCE_ARROW_HEAD_LENGTH, 0.4 * arrow_length)
+        side = np.cross(direction, np.array([0.0, 0.0, 1.0]))
+        if np.linalg.norm(side) < 1e-6:
+            side = np.array([1.0, 0.0, 0.0])
+        side /= np.linalg.norm(side)
+        back = -np.cos(FORCE_ARROW_HEAD_ANGLE) * direction
+        side = np.sin(FORCE_ARROW_HEAD_ANGLE) * side
+
+        draw_line(
+            sim,
+            np.array([end, end + head_length * (back + side)]),
+            rgba=rgba,
+            start_size=4.0,
+            end_size=2.0,
+        )
+        draw_line(
+            sim,
+            np.array([end, end + head_length * (back - side)]),
+            rgba=rgba,
+            start_size=4.0,
+            end_size=2.0,
+        )
+
+
 def main(plot: bool = False):
     sim = Sim(n_drones=2, control="state")
 
@@ -125,24 +170,29 @@ def main(plot: bool = False):
     sim.build_step_fn()
 
     pos = []
+    force = []
     sim.reset()
     sim.render()
     for i in range(int(SIM_DURATION * sim.control_freq)):
         sim.state_control(straight_line_control(sim, i / sim.control_freq))
         sim.step(sim.freq // sim.control_freq)
         current_pos = np.array(sim.data.states.pos[0])
+        current_force = np.array(sim.data.states.force[0])
         pos.append(current_pos)
+        force.append(current_force)
+        draw_force_arrows(sim)
         sim.render()
 
     sim.close()
     if plot:
-        plot_results(pos)
+        plot_results(pos, force)
 
 
-def plot_results(pos: list[NDArray]):
+def plot_results(pos: list[NDArray], force: list[NDArray]):
     import matplotlib.pyplot as plt  # noqa: F401
 
     pos = np.array(pos)
+    force = np.array(force)
     t = np.linspace(0, SIM_DURATION, len(pos))
 
     fig, ax = plt.subplots(3, 1, sharex=True, figsize=(8, 6))
@@ -155,6 +205,17 @@ def plot_results(pos: list[NDArray]):
 
     fig.suptitle("Two-drone downwash example")
     ax[-1].set_xlabel("Time (s)")
+    plt.tight_layout()
+
+    fig_force, ax_force = plt.subplots(3, 1, sharex=True, figsize=(8, 6))
+    for i, label in enumerate(labels):
+        ax_force[i].plot(t, force[:, 0, i], label=f"drone 0 force {label}")
+        ax_force[i].plot(t, force[:, 1, i], label=f"drone 1 force {label}", linestyle="--")
+        ax_force[i].set_ylabel(f"F{label} [N]")
+        ax_force[i].legend()
+
+    fig_force.suptitle("Downwash disturbance force")
+    ax_force[-1].set_xlabel("Time (s)")
     plt.tight_layout()
     plt.show()
 
